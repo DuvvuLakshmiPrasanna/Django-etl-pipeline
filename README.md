@@ -396,8 +396,8 @@ django-etl-pipeline/
             └── migrate_orders.py     # Main ETL pipeline command
 ```
 
-  ## Repository Hygiene
+## Repository Hygiene
 
-  - Unused temporary files are excluded through `.gitignore`.
-  - Runtime data and local editor artifacts are not committed.
-  - Project docs and screenshots remain under version control for evaluator reproducibility.
+- Unused temporary files are excluded through `.gitignore`.
+- Runtime data and local editor artifacts are not committed.
+- Project docs and screenshots remain under version control for evaluator reproducibility.
