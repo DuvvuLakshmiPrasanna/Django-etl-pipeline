@@ -2,6 +2,13 @@
 
 A production-grade, memory-efficient, and resumable data migration pipeline built with Django management commands. Migrates 500,000 legacy denormalized order records into a normalized relational schema using advanced Django ORM optimization techniques.
 
+## What This Project Demonstrates
+
+- Building a resilient ETL command in Django for large datasets
+- Running repeatable migration workflows in Dockerized environments
+- Designing for idempotency, resumability, and operational safety
+- Benchmarking throughput, memory usage, and query efficiency
+
 ## Features
 
 - **Memory-efficient**: Uses `iterator(chunk_size=...)` to keep memory usage constant (~18MB) regardless of dataset size
@@ -11,6 +18,15 @@ A production-grade, memory-efficient, and resumable data migration pipeline buil
 - **Resumable**: `--start-from` flag allows resuming from any point after an interruption
 - **Dry-run support**: Preview what would happen without touching the database
 - **Fully containerized**: Docker + Docker Compose with PostgreSQL health checks
+
+## Production Concepts
+
+- **Idempotent processing**: Source records are filtered by `migrated=False` and marked migrated only after successful writes.
+- **Batch-level atomicity**: Every write unit runs in `transaction.atomic()` so partial batch failures roll back.
+- **Operational resumability**: `--start-from` allows deterministic continuation from an external identifier.
+- **Controlled memory profile**: Streaming with `iterator(chunk_size=...)` avoids ORM cache blowups on large tables.
+- **Safe verification**: Final count reconciliation validates source-to-destination consistency.
+- **Docker stability on Windows**: `runserver --noreload` avoids bind-mount file watcher crashes in mounted paths.
 
 ---
 
@@ -24,7 +40,7 @@ A production-grade, memory-efficient, and resumable data migration pipeline buil
 
 ```bash
 git clone <your-repo-url>
-cd django_etl
+cd django-etl-pipeline
 
 # Copy environment variables
 cp .env.example .env
@@ -85,6 +101,9 @@ docker compose exec db psql -U etl_user -d etl_db -c "SELECT COUNT(*) FROM order
 
 docker compose exec db psql -U etl_user -d etl_db -c "SELECT COUNT(*) FROM orders_legacyorder WHERE migrated = true;"
 # Should return 500000
+
+docker compose exec db psql -U etl_user -d etl_db -c "SELECT COUNT(*) FROM orders_legacyorder WHERE migrated = false;"
+# Should return 0
 ```
 
 ---
@@ -222,6 +241,20 @@ Successfully processed batch of 1,000 records (2,503 lines, 1000 legacy records 
 
 ## Architecture
 
+```mermaid
+flowchart TD
+  A[Query LegacyOrder where migrated=false] --> B[Stream rows using iterator chunk_size]
+  B --> C[Transform raw JSON to Order and OrderLine objects]
+  C --> D[Begin transaction.atomic per batch]
+  D --> E[bulk_create orders]
+  E --> F[Re-fetch created orders by external_id]
+  F --> G[Link order lines to parent PKs]
+  G --> H[bulk_create order lines]
+  H --> I[Mark source rows migrated=true]
+  I --> J[Commit]
+  J --> K[Print throughput and memory summary]
+```
+
 ```
 ETL Flow (per batch):
 ┌─────────────────────────────────────────────────┐
@@ -250,6 +283,44 @@ ETL Flow (per batch):
 │  Print summary: time, throughput, memory        │
 └─────────────────────────────────────────────────┘
 ```
+
+---
+
+## Final Validation
+
+Final migration validation after restart and full completion:
+
+![Final Validation](docs/screenshots/final-validation.png)
+
+```text
+500000
+1250292
+500000
+0
+```
+
+Counts verified:
+
+- `orders_order`: 500000
+- `orders_orderline`: 1250292
+- `orders_legacyorder migrated=true`: 500000
+- `orders_legacyorder migrated=false`: 0
+
+---
+
+## Fresh Docker Test
+
+Executed as final validation workflow:
+
+```bash
+docker compose up --build -d
+docker compose ps
+```
+
+Expected service state:
+
+- `db`: healthy
+- `app`: running
 
 ---
 
@@ -285,10 +356,16 @@ See [benchmark.md](./benchmark.md) for detailed benchmarking results including:
 
 ---
 
+## Screenshots
+
+- Final validation: ![Final Validation](docs/screenshots/final-validation.png)
+
+---
+
 ## Project Structure
 
 ```
-django_etl/
+django-etl-pipeline/
 ├── docker-compose.yml          # Docker Compose configuration
 ├── Dockerfile                  # Application container
 ├── requirements.txt            # Python dependencies
@@ -296,6 +373,9 @@ django_etl/
 ├── manage.py                   # Django management entry point
 ├── benchmark.md                # Performance benchmarking report
 ├── README.md                   # This file
+├── docs/
+│   └── screenshots/
+│       └── final-validation.png
 ├── etl_project/                # Django project package
 │   ├── __init__.py
 │   ├── settings.py             # Django settings
@@ -315,3 +395,9 @@ django_etl/
             ├── seed_legacy_data.py   # Database seeder command
             └── migrate_orders.py     # Main ETL pipeline command
 ```
+
+  ## Repository Hygiene
+
+  - Unused temporary files are excluded through `.gitignore`.
+  - Runtime data and local editor artifacts are not committed.
+  - Project docs and screenshots remain under version control for evaluator reproducibility.

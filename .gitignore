@@ -3,6 +3,20 @@
 __pycache__/
 *.pyc
 db.sqlite3
+*.sqlite3
 staticfiles/
 .DS_Store
 .vscode/
+
+# Python tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environment and logs
+*.log
+
+# IDE metadata
+.idea/
