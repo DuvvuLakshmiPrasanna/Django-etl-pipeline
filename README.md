@@ -30,6 +30,53 @@ A production-grade, memory-efficient, and resumable data migration pipeline buil
 
 ---
 
+## Architecture
+
+```mermaid
+flowchart TD
+  A[Query LegacyOrder where migrated=false] --> B[Stream rows using iterator chunk_size]
+  B --> C[Transform raw JSON to Order and OrderLine objects]
+  C --> D[Begin transaction.atomic per batch]
+  D --> E[bulk_create orders]
+  E --> F[Re-fetch created orders by external_id]
+  F --> G[Link order lines to parent PKs]
+  G --> H[bulk_create order lines]
+  H --> I[Mark source rows migrated=true]
+  I --> J[Commit]
+  J --> K[Print throughput and memory summary]
+```
+
+```
+ETL Flow (per batch):
+┌─────────────────────────────────────────────────┐
+│  Query LegacyOrders WHERE migrated=False        │
+│  (via iterator() — memory-efficient streaming)  │
+└──────────────────────┬──────────────────────────┘
+                       │ chunk_size records at a time
+                       ▼
+┌─────────────────────────────────────────────────┐
+│  Transform raw_data → Order + OrderLine objs    │
+└──────────────────────┬──────────────────────────┘
+                       │ when batch is full
+                       ▼
+┌─────────────────────────────────────────────────┐
+│  BEGIN ATOMIC TRANSACTION                       │
+│  1. bulk_create(orders)                         │
+│  2. Re-fetch orders by external_id → get PKs   │
+│  3. Link OrderLines to parent Order PKs        │
+│  4. bulk_create(order_lines)                    │
+│  5. UPDATE legacy_orders SET migrated=True      │
+│  COMMIT                                         │
+└──────────────────────┬──────────────────────────┘
+                       │ repeat until done
+                       ▼
+┌─────────────────────────────────────────────────┐
+│  Print summary: time, throughput, memory        │
+└─────────────────────────────────────────────────┘
+```
+
+---
+
 ## Quick Start
 
 ### Prerequisites
@@ -105,6 +152,44 @@ docker compose exec db psql -U etl_user -d etl_db -c "SELECT COUNT(*) FROM order
 docker compose exec db psql -U etl_user -d etl_db -c "SELECT COUNT(*) FROM orders_legacyorder WHERE migrated = false;"
 # Should return 0
 ```
+
+---
+
+## Final Validation
+
+Final migration validation after restart and full completion:
+
+![Final Validation](docs/screenshots/final-validation.png)
+
+```text
+500000
+1250292
+500000
+0
+```
+
+Counts verified:
+
+- `orders_order`: 500000
+- `orders_orderline`: 1250292
+- `orders_legacyorder migrated=true`: 500000
+- `orders_legacyorder migrated=false`: 0
+
+---
+
+## Fresh Docker Test
+
+Executed as final validation workflow:
+
+```bash
+docker compose up --build -d
+docker compose ps
+```
+
+Expected service state:
+
+- `db`: healthy
+- `app`: running
 
 ---
 
@@ -239,91 +324,6 @@ Successfully processed batch of 1,000 records (2,503 lines, 1000 legacy records 
 
 ---
 
-## Architecture
-
-```mermaid
-flowchart TD
-  A[Query LegacyOrder where migrated=false] --> B[Stream rows using iterator chunk_size]
-  B --> C[Transform raw JSON to Order and OrderLine objects]
-  C --> D[Begin transaction.atomic per batch]
-  D --> E[bulk_create orders]
-  E --> F[Re-fetch created orders by external_id]
-  F --> G[Link order lines to parent PKs]
-  G --> H[bulk_create order lines]
-  H --> I[Mark source rows migrated=true]
-  I --> J[Commit]
-  J --> K[Print throughput and memory summary]
-```
-
-```
-ETL Flow (per batch):
-┌─────────────────────────────────────────────────┐
-│  Query LegacyOrders WHERE migrated=False        │
-│  (via iterator() — memory-efficient streaming)  │
-└──────────────────────┬──────────────────────────┘
-                       │ chunk_size records at a time
-                       ▼
-┌─────────────────────────────────────────────────┐
-│  Transform raw_data → Order + OrderLine objs    │
-└──────────────────────┬──────────────────────────┘
-                       │ when batch is full
-                       ▼
-┌─────────────────────────────────────────────────┐
-│  BEGIN ATOMIC TRANSACTION                       │
-│  1. bulk_create(orders)                         │
-│  2. Re-fetch orders by external_id → get PKs   │
-│  3. Link OrderLines to parent Order PKs        │
-│  4. bulk_create(order_lines)                    │
-│  5. UPDATE legacy_orders SET migrated=True      │
-│  COMMIT                                         │
-└──────────────────────┬──────────────────────────┘
-                       │ repeat until done
-                       ▼
-┌─────────────────────────────────────────────────┐
-│  Print summary: time, throughput, memory        │
-└─────────────────────────────────────────────────┘
-```
-
----
-
-## Final Validation
-
-Final migration validation after restart and full completion:
-
-![Final Validation](docs/screenshots/final-validation.png)
-
-```text
-500000
-1250292
-500000
-0
-```
-
-Counts verified:
-
-- `orders_order`: 500000
-- `orders_orderline`: 1250292
-- `orders_legacyorder migrated=true`: 500000
-- `orders_legacyorder migrated=false`: 0
-
----
-
-## Fresh Docker Test
-
-Executed as final validation workflow:
-
-```bash
-docker compose up --build -d
-docker compose ps
-```
-
-Expected service state:
-
-- `db`: healthy
-- `app`: running
-
----
-
 ## Environment Variables
 
 See `.env.example` for all required variables:
@@ -353,12 +353,6 @@ See [benchmark.md](./benchmark.md) for detailed benchmarking results including:
 - Memory: 2,800 MB (naive) → **18 MB** (optimized) — 99.4% reduction
 - Queries: ~5,501 per 1,000 records (naive) → **~5** (optimized) — 99.9% reduction
 - Throughput: ~6,757 records/second at batch-size=1000
-
----
-
-## Screenshots
-
-- Final validation: ![Final Validation](docs/screenshots/final-validation.png)
 
 ---
 
